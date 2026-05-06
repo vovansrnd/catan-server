@@ -10,6 +10,7 @@ import json
 import os
 import secrets
 import string
+import sys
 import traceback
 from http import HTTPStatus
 from pathlib import Path
@@ -18,7 +19,7 @@ from bot_brain import BotBrain
 
 try:
     import websockets
-    from websockets.asyncio.server import serve as ws_serve
+    from websockets.asyncio.server import serve
 except ImportError:
     print("Установите websockets: pip install websockets")
     raise
