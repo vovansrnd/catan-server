@@ -11,6 +11,7 @@ import os
 import secrets
 import string
 import traceback
+from http import HTTPStatu
 from pathlib import Path
 
 from bot_brain import BotBrain
@@ -597,13 +598,20 @@ async def ws_handler(ws):
 async def main():
     port = int(os.environ.get("PORT", 8765))
 
+    async def process_request(connection, request):
+        if request.headers.get("Upgrade", "").lower() != "websocket":
+            return connection.respond(HTTPStatus.OK, "OK\n")
+        return None
+
     ws_server = await ws_serve(
         ws_handler,
         "0.0.0.0",
         port,
         max_size=65536,
+        process_request=process_request,
     )
-    print(f"Сервер запущен на порту {port}!")
+    print(f"🏴‍☠️ Колонизаторы запущены на порту {port}!")
+    print("❤️  Health check включён")
     await ws_server.serve_forever()
 
 
