@@ -598,21 +598,38 @@ async def ws_handler(ws):
 async def main():
     port = int(os.environ.get("PORT", 8765))
 
-    async def process_request(connection, request):
-        if request.headers.get("Upgrade", "").lower() != "websocket":
-            return connection.respond(HTTPStatus.OK, "OK\n")
-        return None
+    print(f"[BOOT] Python: {sys.version}", flush=True)
+    print(f"[BOOT] PORT: {port}", flush=True)
 
-    ws_server = await ws_serve(
-        ws_handler,
-        "0.0.0.0",
-        port,
-        max_size=65536,
-        process_request=process_request,
-    )
-    print(f"🏴‍☠️ Колонизаторы запущены на порту {port}!")
-    print("❤️  Health check включён")
-    await ws_server.serve_forever()
+    async def process_request(connection, request):
+        try:
+            upgrade = str(request.headers.get("Upgrade", ""))
+            path = getattr(request, "path", "?")
+            print(f"[HTTP] path={path!r} upgrade={upgrade!r}", flush=True)
+
+            if upgrade.lower() != "websocket":
+                return connection.respond(HTTPStatus.OK, "OK\n")
+
+            return None
+        except Exception:
+            print("[process_request ERROR]", flush=True)
+            traceback.print_exc()
+            return connection.respond(HTTPStatus.INTERNAL_SERVER_ERROR, "ERROR\n")
+
+    try:
+        async with serve(
+            ws_handler,
+            "0.0.0.0",
+            port,
+            process_request=process_request,
+            max_size=65536,
+        ) as server:
+            print(f"[BOOT] listening on 0.0.0.0:{port}", flush=True)
+            await server.serve_forever()
+    except Exception:
+        print("[BOOT ERROR]", flush=True)
+        traceback.print_exc()
+        raise
 
 
 if __name__ == "__main__":
