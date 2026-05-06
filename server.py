@@ -624,6 +624,8 @@ async def main():
             port,
             process_request=process_request,
             max_size=65536,
+            ping_interval=20,
+            ping_timeout=20,
         ) as server:
             print(f"[BOOT] listening on 0.0.0.0:{port}", flush=True)
             await server.serve_forever()
