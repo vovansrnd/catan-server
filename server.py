@@ -11,7 +11,7 @@ import os
 import secrets
 import string
 import traceback
-from http import HTTPStatu
+from http import HTTPStatus
 from pathlib import Path
 
 from bot_brain import BotBrain
