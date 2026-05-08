@@ -562,6 +562,7 @@ class Game:
         self.longest_road_player: Optional[int] = None
         self.largest_army_player: Optional[int] = None
         self.log: list[dict] = []
+        self.log_counter = 0
         self.pending_discards: dict[int, int] = {}
         self.last_setup_vertex: Optional[int] = None
         self.pending_pirate_victims: list[int] = []
@@ -633,7 +634,8 @@ class Game:
         return self.players[self.current_player_idx % len(self.players)]
 
     def _add_log(self, msg: str, player_id: Optional[int] = None):
-        entry = {"msg": msg, "player_id": player_id}
+        self.log_counter += 1
+        entry = {"id": self.log_counter, "msg": msg, "player_id": player_id}
         self.log.append(entry)
         if len(self.log) > 100:
             self.log = self.log[-100:]
@@ -880,6 +882,8 @@ class Game:
                     )
                 )
                 msg += f" → {DEV_CARD_NAMES.get(card, card.value)}"
+            else:
+                msg += " → Увы, колода карт развития пуста!"
 
         elif disc == DiscoveryType.CURSE:
             # --- ИСПРАВЛЕНО: Честный случайный выбор ресурсов на сброс ---
@@ -1102,7 +1106,6 @@ class Game:
         self.current_player_idx = self.setup_order[self.setup_index]
         self.turn = 0
 
-        # ИСПРАВЛЕНО: Лог старта идет первым
         self._add_log("🎮 Игра началась! Фаза расстановки.")
 
         if self.roles_mod:
@@ -1117,6 +1120,10 @@ class Game:
             random.shuffle(available_roles)
 
             for p in self.players:
+                if not available_roles:
+                    p.role_name = ""
+                    continue
+
                 role = available_roles.pop()
                 p.role_name = role["name"]
 
@@ -1331,7 +1338,15 @@ class Game:
                 self._add_log("💀 Выпало 7! Игроки сбрасывают лишние ресурсы.")
             else:
                 self.phase = GamePhase.PIRATE_MOVE
-                self._add_log("🏴‍☠️ Переместите пирата!")
+                if not self._get_legal_targets(self.current_player_idx)[
+                    "move_pirate_hexes"
+                ]:
+                    self.phase = GamePhase.MAIN
+                    self._add_log(
+                        "🏴‍☠️ Пирату некуда идти из-за тумана. Переход к основной фазе."
+                    )
+                else:
+                    self._add_log("🏴‍☠️ Переместите пирата!")
         else:
             self._distribute_resources(total)
             self.phase = GamePhase.MAIN
@@ -1446,7 +1461,10 @@ class Game:
         else:
             self.pending_pirate_victims = []
             self.phase = GamePhase.MAIN
-            self._add_log(f"🏴‍☠️ {player.name} переместил пирата", player_id)
+            # ИСПРАВЛЕНО: Пишем поясняющий лог
+            self._add_log(
+                f"🏴‍☠️ {player.name} переместил пирата (грабить некого)", player_id
+            )
             return {"ok": True, "stolen": None}
 
     def choose_pirate_victim(self, player_id: int, victim_id: int):
@@ -1759,9 +1777,19 @@ class Game:
             player.knights_played += 1
             self._check_largest_army()
             self._check_victory(player_id)
-            self.phase = GamePhase.PIRATE_MOVE
-            self._add_log(f"⚔️ {player.name} сыграл Рыцаря!", player_id)
-            return {"ok": True, "action": "move_pirate"}
+
+            legal = self._get_legal_targets(player_id)["move_pirate_hexes"]
+            if legal:
+                self.phase = GamePhase.PIRATE_MOVE
+                self._add_log(f"⚔️ {player.name} сыграл Рыцаря!", player_id)
+                return {"ok": True, "action": "move_pirate"}
+            else:
+                self.phase = GamePhase.MAIN
+                self._add_log(
+                    f"⚔️ {player.name} сыграл Рыцаря, но пирату некуда идти",
+                    player_id,
+                )
+                return {"ok": True}
 
         if card == DevCardType.ROAD_BUILDING:
             consume_card()
@@ -1784,8 +1812,12 @@ class Game:
             target = self._parse_resource(params.get("resource", ""))
             if not target:
                 return {"error": "Укажите корректный ресурс"}
+
             consume_card()
+
             total_stolen = 0
+            details = []
+
             for other in self.players:
                 if other.player_id == player_id:
                     continue
@@ -1794,8 +1826,12 @@ class Game:
                     other.resources[target] = 0
                     player.add_resource(target, amt)
                     total_stolen += amt
+                    details.append(f"{other.name}: -{amt}")
+
+            details_str = ", ".join(details)
             self._add_log(
-                f"💰 {player.name}: Монополия на {target.value} (+{total_stolen})",
+                f"💰 {player.name}: Монополия на {target.value} "
+                f"(+{total_stolen}) [{details_str}]",
                 player_id,
             )
             return {"ok": True, "stolen": total_stolen}
@@ -1808,16 +1844,26 @@ class Game:
                 hex_id = int(hex_id)
             except Exception:
                 return {"error": "Неверный тайл"}
+
             tile = self.map.hexes.get(hex_id)
             if tile is None:
                 return {"error": "Неверный тайл"}
             if hex_id in player.revealed_hexes:
                 return {"error": "Этот тайл уже открыт"}
+
+            unrevealed = [
+                hid for hid in self.map.hexes if hid not in player.revealed_hexes
+            ]
+            if not unrevealed:
+                return {"error": "Вся карта уже открыта!"}
+
             consume_card()
             player.revealed_hexes.add(hex_id)
+
             discovery_msg = None
             if tile.terrain == TerrainType.RUINS and tile.discovery:
                 discovery_msg = self._handle_discovery(player, tile)
+
             self._add_log(f"🧭 {player.name} исследовал территорию", player_id)
             return {"ok": True, "discovery": discovery_msg}
 
@@ -1826,13 +1872,13 @@ class Game:
             if self.pirate_hex is not None:
                 self.map.hexes[self.pirate_hex].has_pirate = False
             self.pirate_hex = None
+
             for hid, tile in self.map.hexes.items():
                 if tile.terrain == TerrainType.DESERT:
                     tile.has_pirate = True
                     self.pirate_hex = hid
                     break
             else:
-                # --- ИСПРАВЛЕНО: Fallback, если пустыни нет ---
                 if self.map.hexes:
                     hid = next(iter(self.map.hexes))
                     self.map.hexes[hid].has_pirate = True
@@ -1878,27 +1924,38 @@ class Game:
             )
             return {"ok": True}
 
-        if card == DevCardType.SANCTIONS:
+        if card == DevCardType.KNIGHT:
             consume_card()
-            other_players = [p for p in self.players if p.player_id != player_id]
-            if other_players:
-                max_vp = max(
-                    self.get_victory_points(p.player_id, public=True)
-                    for p in other_players
-                )
-                leaders = [
-                    p
-                    for p in other_players
-                    if self.get_victory_points(p.player_id, public=True) == max_vp
-                ]
-                for leader in leaders:
-                    # Блокируем на полный круг ходов
-                    leader.sanctioned_until_turn = self.turn + len(self.players)
-                names = ", ".join(l.name for l in leaders)
+
+            player.knights_played += 1
+
+            self._check_largest_army()
+            self._check_victory(player_id)
+
+            # СНАЧАЛА меняем фазу
+            self.phase = GamePhase.PIRATE_MOVE
+
+            legal = self._get_legal_targets(player_id)["move_pirate_hexes"]
+
+            if legal:
                 self._add_log(
-                    f"🛑 {player.name} объявляет Санкции! Лидеры ({names}) не могут торговать один ход.",
+                    f"⚔️ {player.name} сыграл Рыцаря!",
                     player_id,
                 )
+
+                return {
+                    "ok": True,
+                    "action": "move_pirate",
+                }
+
+            # если реально некуда двигать
+            self.phase = GamePhase.MAIN
+
+            self._add_log(
+                f"⚔️ {player.name} сыграл Рыцаря, но пирату некуда идти",
+                player_id,
+            )
+
             return {"ok": True}
 
         return {"error": "Неизвестное действие"}
@@ -2058,14 +2115,18 @@ class Game:
             for hid in sorted(self.map.hexes)
         ]
 
-        # --- ИСПРАВЛЕНО: Скрываем постройки и дороги в тумане войны ---
+        # В fog of war свои постройки/дороги всегда видны владельцу
         def vertex_visible(v: Vertex):
             if not self.fog_of_war:
+                return True
+            if v.building_owner == player_id:
                 return True
             return any(h in player.revealed_hexes for h in v.adjacent_hexes)
 
         def edge_visible(e: Edge):
             if not self.fog_of_war:
+                return True
+            if e.road_owner == player_id:
                 return True
             return any(h in player.revealed_hexes for h in e.adjacent_hexes)
 
@@ -2074,6 +2135,7 @@ class Game:
             for vid in sorted(self.map.vertices)
             if vertex_visible(self.map.vertices[vid])
         ]
+
         edges = [
             self.map.edges[eid].to_dict()
             for eid in sorted(self.map.edges)
@@ -2091,13 +2153,14 @@ class Game:
             d["victory_points"] = self.get_victory_points(
                 p.player_id, public=(p.player_id != player_id)
             )
-            d["longest_road"] = road_lengths[p.player_id]  # Используем кеш!
+            d["longest_road"] = road_lengths[p.player_id]
             d["has_longest_road"] = self.longest_road_player == p.player_id
             d["has_largest_army"] = self.largest_army_player == p.player_id
             players_public.append(d)
 
         my_data = player.to_dict_private(self.turn)
         my_data["victory_points"] = self.get_victory_points(player_id, public=False)
+        my_data["reconnect_token"] = player.reconnect_token
 
         available_actions = self._get_available_actions(player_id)
         legal_targets = self._get_legal_targets(player_id)
@@ -2111,8 +2174,11 @@ class Game:
                 "give": {r.value: amt for r, amt in o.give.items()},
                 "want": {r.value: amt for r, amt in o.want.items()},
                 "rejected_by_me": player_id in o.rejected_by,
-                "can_accept": player_id != o.from_player
-                and self.players[player_id].has_resources(o.want),
+                "can_accept": (
+                    player_id != o.from_player
+                    and self.turn >= self.players[player_id].sanctioned_until_turn
+                    and self.players[player_id].has_resources(o.want)
+                ),
             }
 
         winner_id = None
