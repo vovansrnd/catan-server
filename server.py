@@ -631,9 +631,16 @@ async def main():
 
     async def process_request(connection, request):
         try:
-            upgrade = str(request.headers.get("Upgrade", ""))
+            # Проверяем метод запроса — Render шлёт HEAD для health check
+            method = getattr(request, "method", "GET")
+            if method.upper() == "HEAD":
+                return connection.respond(HTTPStatus.OK, "OK\n")
+
             path = getattr(request, "path", "?")
-            print(f"[HTTP] path={path!r} upgrade={upgrade!r}", flush=True)
+            upgrade = str(request.headers.get("Upgrade", ""))
+            print(
+                f"[HTTP] method={method} path={path!r} upgrade={upgrade!r}", flush=True
+            )
 
             if upgrade.lower() != "websocket":
                 return connection.respond(HTTPStatus.OK, "OK\n")
