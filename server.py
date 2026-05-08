@@ -626,12 +626,23 @@ async def ws_handler(ws):
 async def main():
     port = int(os.environ.get("PORT", 8765))
 
+    print(f"[BOOT] Python: {sys.version}", flush=True)
+    print(f"[BOOT] PORT: {port}", flush=True)
+
     async def process_request(connection, request):
-        # Render health check шлёт HEAD/GET без Upgrade
-        upgrade = request.headers.get("Upgrade", "")
-        if upgrade.lower() != "websocket":
-            return connection.respond(HTTPStatus.OK, "OK\n")
-        return None  # пропускаем WebSocket дальше
+        try:
+            upgrade = str(request.headers.get("Upgrade", ""))
+            path = getattr(request, "path", "?")
+            print(f"[HTTP] path={path!r} upgrade={upgrade!r}", flush=True)
+
+            if upgrade.lower() != "websocket":
+                return connection.respond(HTTPStatus.OK, "OK\n")
+
+            return None
+        except Exception:
+            print("[process_request ERROR]", flush=True)
+            traceback.print_exc()
+            return connection.respond(HTTPStatus.INTERNAL_SERVER_ERROR, "ERROR\n")
 
     try:
         async with serve(
