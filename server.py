@@ -15,7 +15,10 @@ import traceback
 from http import HTTPStatus
 from pathlib import Path
 
-from bot_brain import BotBrain
+from bot_brain import (
+    BOT_PERSONALITIES,
+    BotBrain,
+)
 
 try:
     import websockets
@@ -100,8 +103,8 @@ async def broadcast_state(room_id: str):
         return
 
     if game.phase == GamePhase.FINISHED and not getattr(game, "stats_saved", False):
-        await update_stats("games_finished")
         game.stats_saved = True
+        await update_stats("games_finished")
 
     conns = room_connections.get(room_id, {})
     dead_conns = []
@@ -192,7 +195,28 @@ async def process_bot_turn(room_id: str, bot_pid: int):
             await asyncio.sleep(1.5)
 
             # Перехватываем ошибки внутри мозга бота
-            brain = BotBrain(bot_pid, game)
+            bot_name = game.players[bot_pid].name
+
+            if "T-800" in bot_name:
+                personality = BOT_PERSONALITIES["t800"]
+
+            elif "R2D2" in bot_name:
+                personality = BOT_PERSONALITIES["merchant"]
+
+            elif "C3PO" in bot_name:
+                personality = BOT_PERSONALITIES["human"]
+
+            elif "Валл-И" in bot_name:
+                personality = BOT_PERSONALITIES["chaos"]
+
+            else:
+                personality = BOT_PERSONALITIES["human"]
+
+            brain = BotBrain(
+                bot_pid,
+                game,
+                personality=personality,
+            )
             try:
                 action, params = brain.decide()
                 print(f"🤖 [КОМНАТА {room_id}] Бот решил: {action} {params}")
@@ -281,7 +305,7 @@ async def handle_message(ws, message):
 
             # Санитизация имени
             name = html.escape(str(data.get("name", "")).strip()[:20]) or "Хост"
-            max_p = safe_int(data.get("max_players"), 4, min_val=2, max_val=4)
+            max_p = 4
             pts = safe_int(data.get("points_to_win"), 10, min_val=1, max_val=20)
 
             fog = bool(data.get("fog_of_war", False))
@@ -368,7 +392,6 @@ async def handle_message(ws, message):
             player_id = data.get("player_id")
             token = str(data.get("reconnect_token", ""))
 
-            # --- ИСПРАВЛЕНО: Защита от кривого player_id ---
             try:
                 player_id = int(player_id)
             except (TypeError, ValueError):
@@ -376,32 +399,36 @@ async def handle_message(ws, message):
                 return
 
             lock = room_locks.setdefault(room_id, asyncio.Lock())
+
+            # --- ИСПРАВЛЕНО: Теперь ВЕСЬ критический код внутри лока ---
             async with lock:
                 game = rooms.get(room_id)
                 if game is None or player_id < 0 or player_id >= len(game.players):
                     await send_error(ws, "Комната или игрок не найдены")
                     return
-            if player_id < 0 or player_id >= len(game.players):
-                return
-            player = game.players[player_id]
 
-            if not token or not secrets.compare_digest(token, player.reconnect_token):
-                await send_error(ws, "Неверный токен")
-                return
+                player = game.players[player_id]
 
-            old_ws = room_connections.get(room_id, {}).get(player_id)
-            if old_ws and old_ws != ws:
-                connections.pop(old_ws, None)
-                try:
-                    await old_ws.close()
-                except:
-                    pass
+                if not token or not secrets.compare_digest(
+                    token, player.reconnect_token
+                ):
+                    await send_error(ws, "Неверный токен")
+                    return
 
-            player.connected = True
-            connections[ws] = (room_id, player_id)
-            room_connections.setdefault(room_id, {})[player_id] = ws
-            cancel_room_cleanup(room_id)
+                old_ws = room_connections.get(room_id, {}).get(player_id)
+                if old_ws and old_ws != ws:
+                    connections.pop(old_ws, None)
+                    try:
+                        await old_ws.close()
+                    except:
+                        pass
 
+                player.connected = True
+                connections[ws] = (room_id, player_id)
+                room_connections.setdefault(room_id, {})[player_id] = ws
+                cancel_room_cleanup(room_id)
+
+            # Отправляем сообщения УЖЕ ВНЕ лока (так как это I/O операции, они не должны тормозить сервер)
             await ws.send(
                 json.dumps(
                     {
